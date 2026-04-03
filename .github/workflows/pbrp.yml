@@ -141,23 +141,24 @@ jobs:
 
     - name: Apply Patches
       run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}
-    
+        cd ${{ steps.pwd.outputs.workspace-folder }}/bootable/recovery
+
         # Patch 002: Add metadata to backup list
         git apply --whitespace=nowarn ${GITHUB_WORKSPACE}/patch/002-add-metatdata-to-backup-list.patch \
-        || echo "Patch 002: skipped (may not apply cleanly)"
-    
+          || echo "WARN: Patch 002 failed or already applied"
+
         # Patch 003: Fix decrypt - prevent /data unmount
         git apply --whitespace=nowarn ${GITHUB_WORKSPACE}/patch/003-fix-decrypt.patch \
-        || echo "Patch 003: skipped (may not apply cleanly)"
-    
-        # Patch 003-fix-decrypt2: Try system/vold first (PBRP 12.x), then system/core/fs_mgr (PBRP 11.x)
-        cd system/vold && git apply --whitespace=nowarn ${GITHUB_WORKSPACE}/patch/003-fix-decrypt2.patch && cd ../.. \
-        || (cd system/core/fs_mgr && git apply --whitespace=nowarn ${GITHUB_WORKSPACE}/patch/003-fix-decrypt2.patch && cd ../../..) \
-        || echo "Patch 003-fix-decrypt2: failed on both paths"
-    
-        echo "Done applying patches"
-        working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+          || echo "WARN: Patch 003 failed or already applied"
+
+        # Patch 003-fix-decrypt2: Try system/vold first (PBRP 12.x), fallback system/core/fs_mgr (PBRP 11.x)
+        cd ../../system/vold
+        git apply --whitespace=nowarn ${GITHUB_WORKSPACE}/patch/003-fix-decrypt2.patch && echo "Patch 003-fix-decrypt2: applied at system/vold" \
+          || (cd ../system/core/fs_mgr && git apply --whitespace=nowarn ${GITHUB_WORKSPACE}/patch/003-fix-decrypt2.patch && echo "Patch 003-fix-decrypt2: applied at system/core/fs_mgr") \
+          || echo "WARN: Patch 003-fix-decrypt2 failed on both paths"
+
+        echo "All patches done"
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
         
     - name: Set Swap Space
       uses: pierotofy/set-swap-space@master
