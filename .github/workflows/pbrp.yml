@@ -1,4 +1,4 @@
-name: Recovery Builder - PBRP
+name: Recovery Builder - PBRP patch 
 
 on:
   workflow_dispatch:
@@ -36,7 +36,7 @@ on:
       MAKEFILE_NAME:
         description: 'MAKEFILE_NAME'
         required: true
-        default: 'omni_X695C'
+        default: 'pbrp_X695C'
       BUILD_TARGET:
         description: 'BUILD_TARGET'
         required: true
@@ -141,34 +141,80 @@ jobs:
 
     - name: Apply Patches
       run: |
-        cd ${{ steps.pwd.outputs.workspace-folder }}/bootable/recovery
+        cd ${{ steps.pwd.outputs.workspace-folder }}
 
-        # Patch 002: Add metadata to backup list
-        git apply --whitespace=nowarn ${GITHUB_WORKSPACE}/patch/002-add-metatdata-to-backup-list.patch \
-          || echo "WARN: Patch 002 failed or already applied"
+        echo "=== Locating target files ==="
+        PARTMGR=$(find . -name "partitionmanager.cpp" -path "*/recovery/*" 2>/dev/null | head -1)
+        PART=$(find . -name "partition.cpp" -path "*/recovery/*" 2>/dev/null | head -1)
+        METACRYPT=$(find . -name "MetadataCrypt.cpp" 2>/dev/null | head -1)
+        echo "partitionmanager.cpp: $PARTMGR"
+        echo "partition.cpp: $PART"
+        echo "MetadataCrypt.cpp: $METACRYPT"
 
-        # Patch 003: Fix decrypt - prevent /data unmount
-        git apply --whitespace=nowarn ${GITHUB_WORKSPACE}/patch/003-fix-decrypt.patch \
-          || echo "WARN: Patch 003 failed or already applied"
+        echo "=== Patch 003: Fix decrypt - prevent /data unmount ==="
+        if [ -n "$PART" ]; then
+          if ! grep -q 'Mount_Point == "/data" && Is_Mounted() && Is_Decrypted' "$PART"; then
+            sed -i '/if (umount("\/system") == -1)/,/umount2("\/system", MNT_DETACH);/a\
+        if(Mount_Point == "\/data" \&\& Is_Mounted() \&\& Is_Decrypted) {\
+                return true;\
+        }' "$PART"
+            echo "Patch 003: applied manually via sed"
+          else
+            echo "Patch 003: already applied"
+          fi
+        else
+          echo "WARN: partition.cpp not found"
+        fi
 
-        # Patch 003-fix-decrypt2: Try system/vold first (PBRP 12.x), fallback system/core/fs_mgr (PBRP 11.x)
-        cd ../../system/vold
-        git apply --whitespace=nowarn ${GITHUB_WORKSPACE}/patch/003-fix-decrypt2.patch && echo "Patch 003-fix-decrypt2: applied at system/vold" \
-          || (cd ../system/core/fs_mgr && git apply --whitespace=nowarn ${GITHUB_WORKSPACE}/patch/003-fix-decrypt2.patch && echo "Patch 003-fix-decrypt2: applied at system/core/fs_mgr") \
-          || echo "WARN: Patch 003-fix-decrypt2 failed on both paths"
+        echo "=== Patch 002: Add metadata to backup list ==="
+        if [ -n "$PARTMGR" ]; then
+          # Backup
+          cp "$PARTMGR" "${PARTMGR}.bak"
+          # Comment out the /metadata exclusion block
+          sed -i '/if (strstr(fstab_line, "\/metadata") && !strstr(fstab_line, "\/data")) {/,/^.*} else if (strstr(fstab_line, "\/data")) {/c\
+          \t\t\t/*if (strstr(fstab_line, "\/metadata") \&\& !strstr(fstab_line, "\/data")) {\
+          \t\t\t\tif (meta) {\
+          \t\t\t\t\tPartitions.erase(std::find(Partitions.begin(), Partitions.end(), meta));\
+          \t\t\t\t\tdelete meta;\
+          \t\t\t\t\tmeta = NULL;\
+          \t\t\t\t}\
+          \t\t\t} else */if (strstr(fstab_line, "\/data")) {' "$PARTMGR"
+          echo "Patch 002: applied manually via sed"
+        else
+          echo "WARN: partitionmanager.cpp not found"
+        fi
 
-        echo "All patches done"
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+        echo "=== Patch 003-fix-decrypt2: Disable metadata unmount ==="
+        if [ -n "$METACRYPT" ]; then
+          if grep -q 'fs_mgr_unmount_all_data_mounts(crypto_blkdev)' "$METACRYPT"; then
+            sed -i 's|^\(\s*\)fs_mgr_unmount_all_data_mounts(crypto_blkdev);.*$|\1if(false)\n\1  fs_mgr_unmount_all_data_mounts(crypto_blkdev);|' "$METACRYPT"
+            echo "Patch 003-fix-decrypt2: applied at $METACRYPT"
+          else
+            echo "Patch 003-fix-decrypt2: function not found or already patched"
+          fi
+        else
+          echo "WARN: MetadataCrypt.cpp not found"
+        fi
+
+        echo "=== All patches done ==="
         
     - name: Set Swap Space
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
 
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1
+      with:
+        key: ${{ github.run_id }}-${{ runner.os }}
+        max-size: 2G
+        
     - name: Building recovery
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
+        export USE_CCACHE=1
+        export CCACHE_EXEC=$(which ccache)
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng && make clean && make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
